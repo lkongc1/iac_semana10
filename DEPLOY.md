@@ -139,7 +139,19 @@ curl -s http://localhost:3100/ready
 - Unit: **seconds (s)**
 - Título: *"Latencia promedio — Backend"*
 
-#### Panel 3: Logs de aplicación
+#### Panel 3: CPU del proceso backend
+
+- Fuente: **Prometheus**
+- Query:
+  ```
+  rate(process_cpu_seconds_total{job="backend"}[1m]) * 100
+  ```
+- Visualización: **Time series**
+- Unit: **Percent (0–100)**
+- Threshold: **50** (rojo)
+- Título: *"CPU proceso backend (%)"*
+
+#### Panel 4: Logs de aplicación
 
 - Fuente: **Loki**
 - Visualización: **Logs**
@@ -153,7 +165,7 @@ curl -s http://localhost:3100/ready
   ```
 - Título: *"Logs de aplicación"*
 
-#### Panel 4: Logs de infraestructura
+#### Panel 5: Logs de infraestructura
 
 - Fuente: **Loki**
 - Visualización: **Logs**
@@ -165,24 +177,45 @@ curl -s http://localhost:3100/ready
 
 Guardá el dashboard con **Save dashboard** (ícono arriba a la derecha).
 
-## Paso 6: Configurar alarma de tasa de errores
+## Paso 6: Configurar alarma de CPU en backend
 
 1. **Alerting → Alert rules → New alert rule**.
-2. Nombre: `Errores en backend`.
+2. Nombre: `CPU backend elevada`.
 3. Query A (Prometheus):
    ```
-   rate(http_requests_total{job="backend", status="500"}[5m])
+   rate(process_cpu_seconds_total{job="backend"}[1m]) * 100
    ```
-4. Condición: expresión **Threshold** con **IS ABOVE `0`**.
+4. Condición: expresión **Threshold** con **IS ABOVE `50`**.
 5. Evaluation interval: `10s`. Pending period: `30s`.
-6. Etiqueta: `severity = critical`.
+6. Etiqueta: `severity = warning`.
 7. Guardar con **Save rule and exit**.
 
 ## Paso 7: Probar la alarma
 
-1. En el frontend, pulsá **"Generar carga de CPU (30s)"** — el backend simula actividad que incluye errores periódicos.
-2. En **Alerting → Alert rules**, verificá que la regla se active si se detectan errores 500.
-3. Cuando la carga termina, los errores cesan y la alarma vuelve a `Normal`.
+1. En el frontend, pulsá **"Generar carga de CPU (30s)"** (o `curl "http://localhost:3001/load?seconds=60"`).
+2. Observá en **Alerting → Alert rules** cómo la regla pasa de `Normal` → `Pending` → `Firing`.
+3. Cuando la carga termina, la CPU baja y la alarma vuelve a `Normal`.
+
+## Paso 8: Cerrar el ciclo — alarma → log
+
+El backend tiene un endpoint `/alerts` que recibe webhooks de Grafana Alerting y los registra como logs estructurados. Esto permite visualizar el recorrido completo: **métrica cruza umbral → se dispara alarma → la alarma produce un log → el log aparece en el dashboard**.
+
+1. En Grafana, andá a **Alerting → Contact points → New contact point**.
+2. Nombre: `backend-webhook`.
+3. Integration: **Webhook**.
+4. URL: `http://backend:3001/alerts`.
+5. Guardá con **Save contact point**.
+6. Volvé a **Alerting → Notification policies**, editá la política por defecto y asignale el contact point `backend-webhook`.
+
+Ahora cuando la alarma se dispare, el backend recibe el webhook y escribe un log con `level=ERROR` (si es `firing`) o `level=INFO` (si es `resolved`). Ese log aparece automáticamente en el panel **"Logs de aplicación"** que configuraste en el Paso 5.
+
+Para verificarlo: dispará la alarma, andá al panel de logs de aplicación y filtrá:
+
+```
+{tier="application"} | json | msg="grafana_alert_received"
+```
+
+Verás la entrada con `alert_status: firing` y el nombre de la regla. Así se cierra el ciclo: métrica → alarma → webhook → log → dashboard.
 
 ## Comandos útiles
 
@@ -215,7 +248,7 @@ docker compose down -v
 | Servicio no levanta | Error de build | `docker compose logs <servicio>` |
 | Sin métricas en Prometheus | Target down | http://localhost:9090/targets |
 | Sin logs en Loki | Alloy sin acceso al socket | http://localhost:12345, verificar volúmenes |
-| Alarma no se dispara | Métrica sin datos | Verificar que `http_requests_total` tenga el label `status="500"` |
+| Alarma no se dispara | Sin carga suficiente | Esperar a que `process_cpu_seconds_total` acumule datos, luego generar carga |
 | Loki 503 | Inicializando el ring | Esperar 2–3 minutos, reintentar |
 
 ## Variables de entorno
