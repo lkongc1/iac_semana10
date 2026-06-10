@@ -1,6 +1,6 @@
 # Guía de Despliegue — Stack de Observabilidad
 
-Stack completo de monitoreo con Prometheus, Loki, Alloy, Grafana, node-exporter y cAdvisor, más aplicaciones instrumentadas (backend + frontend Express). Todo definido como Infraestructura como Código.
+Stack de monitoreo con Prometheus, Loki, Alloy y Grafana, más aplicaciones instrumentadas (backend + frontend Express). Todo definido como Infraestructura como Código.
 
 ## Arquitectura
 
@@ -17,14 +17,13 @@ Stack completo de monitoreo con Prometheus, Loki, Alloy, Grafana, node-exporter 
 │         (métricas + alertas)         │
 └────────────────┬─────────────────────┘
                  │
-    ┌────────────┼────────────┐
-    ▼            ▼            ▼
-┌────────┐ ┌──────────┐ ┌──────────┐
-│  node  │ │ cAdvisor │ │ Grafana  │
-│exporter│ │  :8081   │ │  :3000   │
-│ :9100  │ │          │ │(dashboard│
-└────────┘ └──────────┘ │+ alarmas)│
-                        └──────────┘
+                 ▼
+          ┌──────────────┐
+          │   Grafana    │
+          │    :3000     │
+          │ (dashboard   │
+          │ + alarmas)   │
+          └──────────────┘
 
 ┌──────────┐    ┌──────────┐
 │  Alloy   │───▶│   Loki   │
@@ -34,7 +33,7 @@ Stack completo de monitoreo con Prometheus, Loki, Alloy, Grafana, node-exporter 
 └──────────┘
 ```
 
-- **Prometheus**: recibe métricas de los exporters y de las apps vía `/metrics`.
+- **Prometheus**: recibe métricas de las apps vía `/metrics` y las almacena.
 - **Loki**: almacena logs etiquetados que recibe de Alloy.
 - **Alloy**: recolecta logs de todos los contenedores vía el socket de Docker y los etiqueta por `tier` (`application` o `infrastructure`).
 - **Grafana**: dashboards y alarmas. Las fuentes de datos (Prometheus + Loki) se aprovisionan como código al iniciar.
@@ -45,7 +44,7 @@ Stack completo de monitoreo con Prometheus, Loki, Alloy, Grafana, node-exporter 
 |-------------|---------------|--------------|
 | Docker | 24+ | `docker --version` |
 | Docker Compose | 2.20+ | `docker compose version` |
-| Puertos libres | 3000, 3001, 3100, 8080, 8081, 9090, 9100, 12345 | `ss -tlnp` |
+| Puertos libres | 3000, 3001, 3100, 8080, 9090, 12345 | `ss -tlnp` |
 
 ## Paso 1: Clonar el repositorio
 
@@ -62,20 +61,18 @@ Desde la raíz del proyecto:
 docker compose up -d --build
 ```
 
-La primera ejecución descarga imágenes (~500 MB) y construye las apps. Esperá 1–2 minutos hasta que todos los contenedores estén healthy:
+La primera ejecución descarga imágenes y construye las apps. Esperá 1–2 minutos hasta que todos los contenedores estén healthy:
 
 ```bash
 docker compose ps
 ```
 
-Deberías ver 8 servicios con estado `Up`:
+Deberías ver 6 servicios con estado `Up`:
 
 ```
 lab-backend        Up
 lab-frontend       Up
 lab-prometheus     Up
-lab-node-exporter  Up
-lab-cadvisor       Up
 lab-loki           Up
 lab-alloy          Up
 lab-grafana        Up
@@ -92,8 +89,6 @@ Abrí en el navegador:
 | Prometheus | http://localhost:9090 | UI de Prometheus |
 | Grafana | http://localhost:3000 | Login (`admin` / `admin`) |
 | Alloy | http://localhost:12345 | UI de estado del recolector |
-| cAdvisor | http://localhost:8081 | Métricas de contenedores |
-| Node Exporter | http://localhost:9100/metrics | Métricas del host |
 
 ### Health check rápido
 
@@ -123,28 +118,26 @@ curl -s http://localhost:3100/ready
 
 **Dashboard → New → New dashboard → Add visualization**.
 
-#### Panel 1: CPU del contenedor backend
+#### Panel 1: Peticiones HTTP por segundo (backend)
 
 - Fuente: **Prometheus**
 - Query:
   ```
-  sum(rate(container_cpu_usage_seconds_total{name="lab-backend"}[1m])) * 100
+  rate(http_requests_total{job="backend"}[1m])
   ```
 - Visualización: **Time series**
-- Unit: **Percent (0–100)**
-- Threshold: **50** (rojo)
-- Título: *"CPU contenedor backend (%)"*
+- Título: *"Peticiones HTTP/s — Backend"*
 
-#### Panel 2: CPU del host
+#### Panel 2: Latencia de peticiones (backend)
 
 - Fuente: **Prometheus**
 - Query:
   ```
-  100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)
+  rate(http_request_duration_seconds_sum{job="backend"}[1m]) / rate(http_request_duration_seconds_count{job="backend"}[1m])
   ```
 - Visualización: **Time series**
-- Unit: **Percent (0–100)**
-- Título: *"CPU del host (%)"*
+- Unit: **seconds (s)**
+- Título: *"Latencia promedio — Backend"*
 
 #### Panel 3: Logs de aplicación
 
@@ -172,25 +165,24 @@ curl -s http://localhost:3100/ready
 
 Guardá el dashboard con **Save dashboard** (ícono arriba a la derecha).
 
-## Paso 6: Configurar alarma de CPU > 50%
+## Paso 6: Configurar alarma de tasa de errores
 
 1. **Alerting → Alert rules → New alert rule**.
-2. Nombre: `CPU backend > 50%`.
+2. Nombre: `Errores en backend`.
 3. Query A (Prometheus):
    ```
-   sum(rate(container_cpu_usage_seconds_total{name="lab-backend"}[1m])) * 100
+   rate(http_requests_total{job="backend", status="500"}[5m])
    ```
-4. Condición: expresión **Threshold** con **IS ABOVE `50`**.
+4. Condición: expresión **Threshold** con **IS ABOVE `0`**.
 5. Evaluation interval: `10s`. Pending period: `30s`.
-6. Etiqueta: `severity = warning`.
+6. Etiqueta: `severity = critical`.
 7. Guardar con **Save rule and exit**.
 
 ## Paso 7: Probar la alarma
 
-1. En el frontend, pulsá **"Generar carga de CPU (30s)"** (o `curl "http://localhost:3001/load?seconds=60"`).
-2. Observá el panel de CPU del backend — debe superar el 50%.
-3. En **Alerting → Alert rules**, verificá que la regla pase de `Normal` → `Pending` → `Firing`.
-4. Cuando la carga termina, vuelve a `Normal`.
+1. En el frontend, pulsá **"Generar carga de CPU (30s)"** — el backend simula actividad que incluye errores periódicos.
+2. En **Alerting → Alert rules**, verificá que la regla se active si se detectan errores 500.
+3. Cuando la carga termina, los errores cesan y la alarma vuelve a `Normal`.
 
 ## Comandos útiles
 
@@ -223,7 +215,7 @@ docker compose down -v
 | Servicio no levanta | Error de build | `docker compose logs <servicio>` |
 | Sin métricas en Prometheus | Target down | http://localhost:9090/targets |
 | Sin logs en Loki | Alloy sin acceso al socket | http://localhost:12345, verificar volúmenes |
-| Alarma no se dispara | Nombre de contenedor incorrecto | Usar `name="lab-backend"` en la query |
+| Alarma no se dispara | Métrica sin datos | Verificar que `http_requests_total` tenga el label `status="500"` |
 | Loki 503 | Inicializando el ring | Esperar 2–3 minutos, reintentar |
 
 ## Variables de entorno
