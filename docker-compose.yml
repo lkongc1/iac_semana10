@@ -1,5 +1,5 @@
 # Stack de Observabilidad — Infraestructura como Código
-# Apps (backend + frontend) + Prometheus + Loki + Alloy + Grafana + node-exporter + cAdvisor
+# Apps (backend + frontend) + Prometheus + Loki + Alloy + Grafana
 #
 #   docker compose up -d --build      # levantar todo
 #   docker compose down               # detener (conserva dashboards de Grafana)
@@ -36,39 +36,6 @@ services:
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
-    restart: unless-stopped
-
-  node-exporter:
-    image: prom/node-exporter:v1.8.2
-    container_name: lab-node-exporter
-    command:
-      - "--path.rootfs=/host"
-    pid: host
-    volumes:
-      - /:/host:ro,rslave
-    ports:
-      - "9100:9100"
-    restart: unless-stopped
-
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
-    container_name: lab-cadvisor
-    privileged: true
-    command:
-      - "--housekeeping_interval=10s"
-      - "--docker=unix:///var/run/docker.sock"
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /sys:/sys:ro
-      - /sys/fs/cgroup:/sys/fs/cgroup:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
-    devices:
-      - /dev/kmsg
-    ports:
-      - "8081:8080"
     restart: unless-stopped
 
   # ----------------------------- Logs -----------------------------
